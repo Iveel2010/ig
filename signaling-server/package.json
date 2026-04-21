@@ -1,0 +1,13 @@
+{
+  "name": "signaling-server",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "init": "file:..",
+    "ws": "^8.13.0"
+  }
+}

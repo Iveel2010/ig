@@ -1,0 +1,20 @@
+[
+  {
+    "id": "314f5f41-ffcc-4000-9e63-31d71d5d4ee0",
+    "username": "smoketestuser",
+    "email": "smoketest@example.com",
+    "ig": "@smoketest",
+    "salt": "a1ae3b2405efea273f5b08af1cefa309",
+    "passwordHash": "92e2e0ec53f7d87abf8294512305ad03af875df8c975c78cf1d8b1fc1a1083f0597573e34a681a91a42cdeb460d1f969c24b9c32a88c7f57648122f70287dfaf",
+    "createdAt": "2026-04-21T06:06:19.869Z"
+  },
+  {
+    "id": "d3a99e20-c442-4d90-9414-55ef8ee4dde7",
+    "username": "Iveel",
+    "email": "iweel20101216@gmail.com",
+    "ig": "@IVeel",
+    "salt": "beb2dc66030bbb2488cb146ad7aba6b7",
+    "passwordHash": "bc2a1d2b81f3b7f9a0c422b36b1c214e77c526290318625545f5017055ad8bb0b50ab857203f565bd6c35913bb1736cd78704c55bc46da7079f0eb9a37468d21",
+    "createdAt": "2026-04-21T06:57:06.168Z"
+  }
+]
