@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { signToken, COOKIE_NAME, COOKIE_MAX_AGE } from "../../../lib/auth";
 import {
   readUsers,
   writeUsers,
@@ -58,8 +59,13 @@ export async function POST(req: Request) {
     users.push(user);
     await writeUsers(users);
 
+    // Auto-login after signup
+    const token = signToken(user.id);
+    const secure = process.env.NODE_ENV === "production";
+    const cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${COOKIE_MAX_AGE}${secure ? "; Secure" : ""}`;
+
     const safe = { id: user.id, username: user.username, email: user.email, ig: user.ig, createdAt: user.createdAt };
-    return NextResponse.json({ ok: true, user: safe }, { status: 201 });
+    return NextResponse.json({ ok: true, user: safe }, { status: 201, headers: { "Set-Cookie": cookie } });
   } catch (err) {
     console.error("signup error", err);
     return NextResponse.json({ ok: false, error: "Internal server error" }, { status: 500 });

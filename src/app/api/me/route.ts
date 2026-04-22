@@ -20,6 +20,16 @@ export async function GET(req: Request) {
     const verified = verifyToken(token);
     if (!verified.ok) return NextResponse.json({ ok: false, error: "Invalid token" }, { status: 401 });
     const userId = verified.payload.sub;
+
+    // Handle special admin ID
+    if (userId === "admin") {
+      const adminEmail = process.env.ADMIN_EMAIL || "admin@ometv.com";
+      return NextResponse.json({ 
+        ok: true, 
+        user: { id: "admin", username: "Administrator", email: adminEmail, role: "admin" } 
+      }, { status: 200 });
+    }
+
     const users = await readUsers();
     const user = users.find((u: any) => u.id === userId);
     if (!user) return NextResponse.json({ ok: false, error: "User not found" }, { status: 404 });

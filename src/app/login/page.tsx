@@ -38,8 +38,8 @@ export default function LoginPage() {
         setLoading(false);
         return;
       }
-      // success -> go to home page
-      router.push("/");
+      // success -> go to dashboard
+      router.push("/dashboard");
     } catch (err) {
       setError("Network error");
     } finally {

@@ -19,23 +19,76 @@ export default function Home() {
 
   const [authChecked, setAuthChecked] = useState(false);
   const [authUser, setAuthUser] = useState<any | null>(null);
+  const [callInitiated, setCallInitiated] = useState(false);
 
   // Instagram exchange state
   const [myIg, setMyIg] = useState("");
   const [myIgShared, setMyIgShared] = useState(false);
   const [peerIg, setPeerIg] = useState<string | null>(null);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const [country, setCountry] = useState("United States");
+  const [language, setLanguage] = useState("English");
+  const [isLive, setIsLive] = useState(false);
+  const [isFakeStream, setIsFakeStream] = useState(false);
+  const [onlineCount, setOnlineCount] = useState(0);
+  const [waitingCount, setWaitingCount] = useState(0);
   const [status, setStatus] = useState<
     "idle" | "searching" | "connecting" | "connected"
   >("idle");
   const [myId, setMyId] = useState<string | null>(null);
 
+  // Admin Features: Snap Filters
+  const [activeFilter, setActiveFilter] = useState("none");
+  const [wsStatus, setWsStatus] = useState<
+    "disconnected" | "connecting" | "connected"
+  >("disconnected");
+  const isAdmin = authUser?.role === "admin";
+
+  const filters = [
+    { id: "none", name: "Original", style: "" },
+    { id: "grayscale", name: "Noir", style: "grayscale(100%)" },
+    { id: "sepia", name: "Vintage", style: "sepia(100%)" },
+    {
+      id: "brightness",
+      name: "Glamour",
+      style: "brightness(1.5) contrast(1.1) saturate(1.2)",
+    },
+    { id: "blur", name: "Privacy", style: "blur(10px)" },
+    { id: "hue", name: "Cyberpunk", style: "hue-rotate(180deg) saturate(2)" },
+    { id: "invert", name: "Negative", style: "invert(100%)" },
+  ];
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    if (status === "connected") {
+      setIsLive(true);
+      setTimeout(() => chatInputRef.current?.focus(), 100);
+    } else {
+      setIsLive(false);
+    }
+  }, [status]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (status === "idle") {
+          findPartner();
+        } else {
+          nextPartner();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [status]);
+
   const SIGNALING_URL =
     typeof window !== "undefined"
-      ? process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || "ws://localhost:8080"
+      ? process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || "ws://localhost:8082"
       : "";
 
   // Create a synthetic MediaStream (canvas video + silent audio) for testing without camera/mic
@@ -92,9 +145,15 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (!authChecked) return;
+    setWsStatus("connecting");
     const ws = new WebSocket(SIGNALING_URL);
     wsRef.current = ws;
-    ws.onopen = () => console.log("connected to signaling server");
+    ws.onopen = () => {
+      console.log("connected to signaling server");
+      setWsStatus("connected");
+      // Request initial stats
+      ws.send(JSON.stringify({ type: "get-stats" }));
+    };
     ws.onmessage = (ev) => {
       let data: any;
       try {
@@ -104,7 +163,10 @@ export default function Home() {
       }
       handleSignalMessage(data);
     };
-    ws.onclose = () => console.log("signaling closed");
+    ws.onclose = () => {
+      console.log("signaling closed");
+      setWsStatus("disconnected");
+    };
     return () => {
       ws.close();
     };
@@ -136,23 +198,47 @@ export default function Home() {
     };
   }, [router]);
 
+  // Poll for stats every 5 seconds
+  useEffect(() => {
+    if (wsStatus !== "connected") return;
+    const iv = setInterval(() => {
+      send({ type: "get-stats" });
+    }, 5000);
+    return () => clearInterval(iv);
+  }, [wsStatus]);
+
   async function startCamera() {
     if (localStreamRef.current) return;
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
-      localStreamRef.current = s;
-      if (localVideoRef.current) localVideoRef.current.srcObject = s;
-    } catch (err) {
-      console.error("getUserMedia error", err);
-      // Fallback to a fake media stream so users without camera/mic can still test
-      console.warn("Falling back to fake media stream for testing");
-      const fake = createFakeMediaStream();
-      localStreamRef.current = fake;
-      if (localVideoRef.current) localVideoRef.current.srcObject = fake;
+
+    const constraints = [
+      { video: true, audio: true },
+      { video: true, audio: false },
+      { video: false, audio: true },
+    ];
+
+    for (const constraint of constraints) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia(constraint);
+        localStreamRef.current = s;
+        if (localVideoRef.current) localVideoRef.current.srcObject = s;
+        console.log("Media started with constraints:", constraint);
+        setIsFakeStream(false);
+        return;
+      } catch (err) {
+        console.warn(
+          `Failed to start media with constraints:`,
+          constraint,
+          err,
+        );
+      }
     }
+
+    // If all real hardware attempts fail, fallback to fake stream
+    console.warn("No camera/mic found. Using virtual stream for testing.");
+    setIsFakeStream(true);
+    const fake = createFakeMediaStream();
+    localStreamRef.current = fake;
+    if (localVideoRef.current) localVideoRef.current.srcObject = fake;
   }
 
   function send(obj: any) {
@@ -244,15 +330,52 @@ export default function Home() {
     return pc;
   }
 
+  // watch for call param in URL
+  useEffect(() => {
+    if (!authChecked || !authUser || authUser.role !== "admin" || callInitiated)
+      return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetId = urlParams.get("call");
+    if (targetId) {
+      setCallInitiated(true);
+      console.log("Initiating admin call to", targetId);
+      send({ type: "identify", role: "admin", name: "Administrator" });
+      setTimeout(() => {
+        send({ type: "admin-call", targetId });
+      }, 100);
+    }
+  }, [authChecked, authUser, callInitiated, myId]); // myId ensures ws is connected and initialized
+
+  // handle signaling messages
   async function handleSignalMessage(data: any) {
     switch (data.type) {
+      case "stats":
+        setOnlineCount(data.online);
+        setWaitingCount(data.waiting);
+        break;
       case "init":
         setMyId(data.id);
+        // Send username to signaling server for identification
+        if (authUser) {
+          send({ type: "set-username", username: authUser.username });
+        }
+        break;
+      case "active-users":
+        // Admin might get this if they are on this page
         break;
       case "waiting":
         setStatus("searching");
         break;
       case "paired":
+        if (data.adminCall) {
+          console.log(
+            data.initiator
+              ? "Calling user..."
+              : `Admin ${data.fromName} is calling!`,
+          );
+        }
         setStatus("connecting");
         {
           const initiator = data.initiator;
@@ -297,7 +420,10 @@ export default function Home() {
         break;
       case "peer-left":
         cleanupPeer();
-        alert("Peer disconnected.");
+        // Auto-rejoin after a brief delay
+        setTimeout(() => {
+          findPartner();
+        }, 1500);
         break;
       default:
         console.log("unknown signal", data);
@@ -381,13 +507,24 @@ export default function Home() {
     }
   }
 
+  async function nextPartner() {
+    endCall();
+    // Small delay to ensure the signaling server processes the leave
+    setTimeout(() => {
+      findPartner();
+    }, 100);
+  }
+
   // ----- UI Helpers -----
-  const statusMessage = {
-    idle: "Ready to chat",
-    searching: "Looking for a partner...",
-    connecting: "Establishing connection...",
-    connected: "Connected",
-  }[status];
+  const statusMessage =
+    status === "searching" && waitingCount <= 1
+      ? "Waiting for someone to join..."
+      : {
+          idle: "Ready to chat",
+          searching: "Looking for a partner...",
+          connecting: "Establishing connection...",
+          connected: "Connected",
+        }[status];
 
   const isConnected = status === "connected";
   const showRemotePlaceholder =
@@ -415,265 +552,364 @@ export default function Home() {
     <div className="min-h-screen gradient-bg flex items-center justify-center p-4">
       <div className="w-full max-w-6xl">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6 px-2">
+        <div className="flex flex-col sm:flex-row items-center justify-between mb-6 gap-4 px-2">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-600 shadow-lg flex items-center justify-center">
               <CameraIcon className="h-5 w-5 text-white" />
             </div>
             <div>
               <h1 className="text-3xl font-bold text-white tracking-tight bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                VideoChat
+                OmeTV Clone
               </h1>
-              <p className="text-xs text-gray-400">
-                Connect with people worldwide
+              <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">
+                Real-Time Video Chat
               </p>
             </div>
           </div>
-          {myId && (
-            <div className="glass px-4 py-2 rounded-full">
-              <span className="text-gray-400 text-sm">ID: </span>
-              <span className="text-white font-mono text-sm bg-blue-500/10 px-2 py-1 rounded">
-                {myId}
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg border border-white/5">
+              <div
+                className={`h-2 w-2 rounded-full ${
+                  wsStatus === "connected"
+                    ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+                    : wsStatus === "connecting"
+                      ? "bg-yellow-500 animate-pulse"
+                      : "bg-red-500"
+                }`}
+              />
+              <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                Server: {wsStatus}
               </span>
             </div>
-          )}
+            <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg border border-white/5">
+              <div className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]" />
+              <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                Online: {onlineCount}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg border border-white/5">
+              <span className="text-[10px] text-gray-400 font-bold uppercase">
+                Country
+              </span>
+              <select
+                value={country}
+                onChange={(e) => setCountry(e.target.value)}
+                className="bg-transparent text-white text-xs font-medium focus:outline-none cursor-pointer"
+              >
+                <option className="bg-gray-900" value="United States">
+                  🇺🇸 USA
+                </option>
+                <option className="bg-gray-900" value="Global">
+                  🌐 Global
+                </option>
+                <option className="bg-gray-900" value="Europe">
+                  🇪🇺 Europe
+                </option>
+                <option className="bg-gray-900" value="Asia">
+                  🌏 Asia
+                </option>
+              </select>
+            </div>
+            {myId && (
+              <div className="glass px-4 py-2 rounded-full border border-white/5">
+                <span className="text-gray-400 text-sm">ID: </span>
+                <span className="text-white font-mono text-sm bg-blue-500/10 px-2 py-1 rounded">
+                  {myId}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Video Area */}
-        <div className="relative glass rounded-2xl overflow-hidden shadow-2xl aspect-video">
-          {/* Remote Video (main) */}
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            className="w-full h-full object-cover"
-          />
-
-          {/* Remote Placeholder / Status Overlay */}
-          {showRemotePlaceholder && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-gray-900/80 to-black/80 backdrop-blur-sm">
-              <div className="text-center">
-                <div className="relative inline-block mb-6">
-                  <div className="h-24 w-24 rounded-full bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shadow-2xl">
-                    {status === "searching" ? (
-                      <div className="relative">
-                        <SearchIcon className="h-10 w-10 text-white animate-pulse" />
-                        <div className="absolute -inset-4 bg-blue-500/20 rounded-full animate-ping"></div>
-                      </div>
-                    ) : status === "connecting" ? (
-                      <div className="relative">
-                        <ConnectionIcon className="h-10 w-10 text-yellow-400 animate-spin" />
-                        <div className="absolute -inset-4 bg-yellow-500/20 rounded-full animate-pulse"></div>
-                      </div>
-                    ) : (
-                      <CameraIcon className="h-10 w-10 text-gray-400" />
+        {/* Main Content Area */}
+        <div className="flex flex-col lg:flex-row gap-8">
+          {/* Left Column: Videos and Main Controls */}
+          <div className="flex-1">
+            {/* Video Area - OmeTV Style Side-by-Side */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 h-[350px] md:h-[450px]">
+              {/* My Video */}
+              <div className="relative glass rounded-2xl overflow-hidden shadow-2xl bg-gray-900 border-2 border-blue-500/30">
+                {isLive && (
+                  <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-600 px-2 py-1 rounded-md shadow-lg animate-pulse z-10">
+                    <div className="h-2 w-2 bg-white rounded-full"></div>
+                    <span className="text-[10px] text-white font-bold tracking-wider">
+                      LIVE
+                    </span>
+                  </div>
+                )}
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="w-full h-full object-cover scale-x-[-1] transition-all duration-500"
+                  style={{
+                    filter: filters.find((f) => f.id === activeFilter)?.style,
+                  }}
+                />
+                {isFakeStream && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/90 backdrop-blur-sm z-20 p-6 text-center">
+                    <div className="h-12 w-12 bg-yellow-500/20 rounded-full flex items-center justify-center mb-3">
+                      <CameraIcon className="h-6 w-6 text-yellow-500" />
+                    </div>
+                    <p className="text-white font-bold text-sm mb-1">
+                      No Camera Detected
+                    </p>
+                    <p className="text-gray-400 text-[10px] max-w-[180px]">
+                      We're using a virtual stream so you can still test the app
+                      features.
+                    </p>
+                  </div>
+                )}
+                {!localStreamRef.current && !isFakeStream && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm">
+                    <CameraIcon className="h-12 w-12 text-gray-600 mb-2" />
+                    <p className="text-gray-400 font-medium text-sm">
+                      Camera is off
+                    </p>
+                  </div>
+                )}
+                <div className="absolute bottom-4 left-4 glass px-3 py-1 rounded-lg">
+                  <span className="text-white text-xs font-semibold flex items-center gap-2">
+                    <div className="h-2 w-2 bg-blue-500 rounded-full"></div>
+                    You{" "}
+                    {isAdmin && (
+                      <span className="text-[9px] bg-blue-500 text-white px-1 rounded ml-1">
+                        ADMIN
+                      </span>
                     )}
+                  </span>
+                </div>
+
+                {/* Snap Filters for Admin */}
+                {isAdmin && (
+                  <div className="absolute top-4 left-4 right-16 flex gap-1 overflow-x-auto pb-2 scrollbar-hide z-20">
+                    {filters.map((f) => (
+                      <button
+                        key={f.id}
+                        onClick={() => setActiveFilter(f.id)}
+                        className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-wider transition-all backdrop-blur-md border ${
+                          activeFilter === f.id
+                            ? "bg-blue-600 text-white border-blue-400"
+                            : "bg-black/40 text-gray-400 border-white/10 hover:bg-black/60"
+                        }`}
+                      >
+                        {f.name}
+                      </button>
+                    ))}
                   </div>
-                  {status === "searching" && (
-                    <div className="absolute -top-2 -right-2">
-                      <div className="flex space-x-1">
-                        <span className="inline-block w-3 h-3 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                        <span className="inline-block w-3 h-3 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                        <span className="inline-block w-3 h-3 bg-blue-400 rounded-full animate-bounce"></span>
+                )}
+              </div>
+
+              {/* Remote Video */}
+              <div className="relative glass rounded-2xl overflow-hidden shadow-2xl bg-gray-900 border-2 border-purple-500/30">
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-cover"
+                />
+                {showRemotePlaceholder && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-md">
+                    <div className="relative">
+                      <div className="h-16 w-16 rounded-full bg-gradient-to-br from-purple-600 to-blue-600 flex items-center justify-center shadow-2xl">
+                        {status === "searching" ? (
+                          <div className="relative">
+                            <SearchIcon className="h-8 w-8 text-white animate-pulse" />
+                            <div className="absolute -inset-3 bg-blue-500/20 rounded-full animate-ping"></div>
+                          </div>
+                        ) : status === "connecting" ? (
+                          <ConnectionIcon className="h-8 w-8 text-yellow-400 animate-spin" />
+                        ) : (
+                          <CameraIcon className="h-8 w-8 text-gray-500" />
+                        )}
                       </div>
                     </div>
-                  )}
-                </div>
-                <p className="text-white text-xl font-semibold mb-2">
-                  {statusMessage}
-                </p>
-                <p className="text-gray-400 text-sm">
-                  {status === "searching" &&
-                    "Finding someone amazing to connect with..."}
-                  {status === "connecting" &&
-                    "Establishing secure connection..."}
-                  {status === "idle" && "Ready to start a new conversation"}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Local Video Preview (floating) */}
-          <div
-            className={`absolute bottom-6 right-6 w-32 md:w-48 rounded-2xl overflow-hidden shadow-2xl border-4 transition-all duration-500 transform hover:scale-105 ${
-              isConnected
-                ? "border-blue-500/60 shadow-blue-500/30"
-                : "border-gray-600/50"
-            }`}
-          >
-            <video
-              ref={localVideoRef}
-              autoPlay
-              muted
-              playsInline
-              className="w-full h-full object-cover bg-gray-800"
-            />
-            {!localStreamRef.current && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black/60 text-white text-sm font-medium backdrop-blur-sm">
-                Camera off
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div className="flex flex-col sm:flex-row items-center sm:justify-center mt-8 gap-4">
-          <button
-            onClick={startCamera}
-            className="group relative p-5 rounded-full glass hover:bg-white/10 transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-105"
-            title="Start Camera"
-          >
-            <CameraIcon className="h-7 w-7 text-gray-300 group-hover:text-white transition-colors" />
-            <div className="absolute inset-0 bg-gradient-to-r from-blue-500/0 to-purple-500/0 group-hover:from-blue-500/10 group-hover:to-purple-500/10 rounded-full transition-all duration-500"></div>
-          </button>
-
-          <button
-            onClick={findPartner}
-            disabled={status !== "idle"}
-            className={`group relative px-8 py-4 rounded-full font-semibold flex items-center justify-center w-full sm:w-auto gap-3 transition-all duration-300 transform hover:scale-105 ${
-              status === "idle"
-                ? "gradient-primary text-white shadow-2xl shadow-blue-500/40 hover:shadow-blue-500/60"
-                : "bg-gray-700/50 text-gray-500 cursor-not-allowed glass"
-            }`}
-          >
-            <SearchIcon className="h-5 w-5" />
-            <span>Find Random</span>
-            {status === "idle" && (
-              <div className="absolute -inset-1 bg-blue-500/20 rounded-full animate-pulse opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            )}
-          </button>
-
-          <button
-            onClick={endCall}
-            disabled={status === "idle"}
-            className={`group relative p-5 rounded-full transition-all duration-300 shadow-lg transform hover:scale-105 ${
-              status !== "idle"
-                ? "bg-gradient-to-r from-red-600 to-red-500 text-white shadow-2xl shadow-red-500/40 hover:shadow-red-500/60 border border-red-400/50"
-                : "bg-gray-700/50 text-gray-500 cursor-not-allowed glass"
-            }`}
-            title="End Call"
-          >
-            <EndIcon className="h-7 w-7 text-white" />
-            {status !== "idle" && (
-              <div className="absolute -inset-1 bg-red-500/20 rounded-full animate-pulse opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            )}
-          </button>
-        </div>
-
-        {/* Chat panel */}
-        <div className="max-w-2xl mx-auto mt-8 card p-0 overflow-hidden">
-          <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-3">
-            <h3 className="text-white font-semibold flex items-center gap-2">
-              <div className="h-2 w-2 bg-green-400 rounded-full animate-pulse"></div>
-              Live Chat
-            </h3>
-          </div>
-          <div
-            className="h-48 overflow-y-auto p-4 space-y-3 text-sm bg-gray-900/50"
-            id="chat-messages"
-          >
-            {messages.length === 0 ? (
-              <div className="text-center text-gray-400 py-8">
-                <div className="h-12 w-12 mx-auto mb-3 bg-gray-700/50 rounded-full flex items-center justify-center">
-                  <div className="h-6 w-6 text-gray-500">💬</div>
-                </div>
-                <p className="text-sm">No messages yet</p>
-                <p className="text-xs text-gray-500 mt-1">
-                  Start a conversation when connected
-                </p>
-              </div>
-            ) : (
-              messages.map((m, i) => (
-                <div
-                  key={i}
-                  className={`flex ${m.from === "me" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`${m.from === "me" ? "bg-gradient-to-r from-blue-600 to-blue-500 text-white" : "bg-gray-700 text-gray-200 glass"} px-4 py-2 rounded-2xl max-w-[80%] shadow-sm`}
-                  >
-                    <div className="text-sm">{m.text}</div>
-                    <div
-                      className={`text-xs mt-1 ${m.from === "me" ? "text-blue-100/70" : "text-gray-400"}`}
-                    >
-                      {new Date(m.ts).toLocaleTimeString()}
-                    </div>
+                    <p className="text-white text-base font-semibold mt-4 mb-1">
+                      {statusMessage}
+                    </p>
+                    <p className="text-gray-500 text-xs max-w-[150px] text-center px-4">
+                      {status === "searching" && "Looking for a partner..."}
+                      {status === "connecting" && "Establishing link..."}
+                      {status === "idle" && "Click Start to meet someone"}
+                    </p>
                   </div>
-                </div>
-              ))
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-          <div className="p-3 bg-gray-800/50 border-t border-gray-700">
-            <div className="flex gap-2">
-              <textarea
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendChatMessage(chatInput);
-                  }
-                }}
-                className="flex-1 resize-none input bg-gray-900 border-gray-700 text-sm"
-                rows={1}
-                placeholder={
-                  isConnected
-                    ? "Type a message..."
-                    : "Chat opens when connected"
-                }
-                disabled={!isConnected}
-              />
-              <button
-                onClick={() => sendChatMessage(chatInput)}
-                disabled={!isConnected || !chatInput.trim()}
-                className="px-4 py-2 rounded-md bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
-              >
-                Send
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* IG exchange panel */}
-        <div className="max-w-2xl mx-auto mt-6 card p-0 overflow-hidden">
-          <div className="bg-gradient-to-r from-green-600 to-emerald-600 px-4 py-3">
-            <h3 className="text-white font-semibold flex items-center gap-2">
-              <div className="h-5 w-5 bg-white/20 rounded-full flex items-center justify-center">
-                <span className="text-xs">📸</span>
-              </div>
-              Instagram Exchange
-            </h3>
-          </div>
-          <div className="p-4 bg-gray-900/50">
-            <div className="flex items-center gap-3">
-              <input
-                value={myIg}
-                onChange={(e) => setMyIg(e.target.value)}
-                placeholder="Your Instagram (e.g. @username)"
-                className="flex-1 input bg-gray-800 border-gray-600 text-sm"
-                disabled={!isConnected || myIgShared}
-              />
-              <button
-                onClick={shareIg}
-                disabled={!isConnected || myIgShared}
-                className={`px-5 py-2.5 rounded-md font-medium transition-all duration-200 ${
-                  myIgShared 
-                    ? 'bg-gray-600 text-gray-300 cursor-not-allowed' 
-                    : 'bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 text-white shadow-lg shadow-green-500/25'
-                }`}
-              >
-                {myIgShared ? 'Shared ✓' : 'Share IG'}
-              </button>
-            </div>
-            <div className="mt-3 p-3 bg-gray-800/30 rounded-lg border border-gray-700">
-              <div className="text-sm text-gray-300 flex items-center gap-2">
-                <div className="h-2 w-2 bg-green-400 rounded-full animate-pulse"></div>
-                {peerIg ? (
-                  <span>
-                    Peer's Instagram: <span className="font-mono text-white bg-green-500/10 px-2 py-1 rounded">{peerIg}</span>
+                )}
+                <div className="absolute bottom-4 left-4 glass px-3 py-1 rounded-lg">
+                  <span className="text-white text-xs font-semibold flex items-center gap-2">
+                    <div className="h-2 w-2 bg-purple-500 rounded-full animate-pulse"></div>
+                    {status === "connected" ? "Partner" : "Waiting..."}
                   </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Main Controls */}
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+              {status === "idle" ? (
+                <button
+                  onClick={findPartner}
+                  className="group relative px-12 py-4 rounded-xl font-bold text-lg flex items-center justify-center w-full sm:w-auto gap-4 transition-all duration-300 transform hover:scale-[1.02] bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-xl shadow-blue-500/20"
+                >
+                  <SearchIcon className="h-5 w-5" />
+                  <div className="flex flex-col items-start">
+                    <span className="leading-tight">START CHAT</span>
+                    <span className="text-[10px] opacity-60 font-normal">
+                      Press ESC
+                    </span>
+                  </div>
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={nextPartner}
+                    className="group relative px-12 py-4 rounded-xl font-bold text-lg flex items-center justify-center w-full sm:w-auto gap-4 transition-all duration-300 transform hover:scale-[1.02] bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-xl shadow-blue-500/20"
+                  >
+                    <NextIcon className="h-5 w-5" />
+                    <div className="flex flex-col items-start">
+                      <span className="leading-tight">NEXT PARTNER</span>
+                      <span className="text-[10px] opacity-60 font-normal">
+                        Press ESC
+                      </span>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={endCall}
+                    className="group relative px-8 py-4 rounded-xl font-bold text-lg flex items-center justify-center w-full sm:w-auto gap-4 transition-all duration-300 transform hover:scale-[1.02] bg-gray-800 text-white border border-red-500/30 hover:bg-red-950/20"
+                  >
+                    <EndIcon className="h-5 w-5 text-red-500" />
+                    <span>STOP</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Right Column: Chat and IG Exchange */}
+          <div className="w-full lg:w-96 flex flex-col gap-6">
+            {/* Chat panel */}
+            <div className="card p-0 overflow-hidden flex flex-col h-[400px]">
+              <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-3 flex items-center justify-between">
+                <h3 className="text-white text-sm font-semibold flex items-center gap-2">
+                  <div className="h-2 w-2 bg-green-400 rounded-full animate-pulse"></div>
+                  Live Chat
+                </h3>
+                {isConnected && (
+                  <span className="text-[10px] text-blue-100 bg-white/10 px-2 py-0.5 rounded-full">
+                    Connected
+                  </span>
+                )}
+              </div>
+              <div
+                className="flex-1 overflow-y-auto p-4 space-y-3 text-sm bg-gray-900/50"
+                id="chat-messages"
+              >
+                {messages.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-gray-500 text-center p-4">
+                    <div className="h-10 w-10 bg-gray-800 rounded-full flex items-center justify-center mb-2">
+                      <span className="text-lg">💬</span>
+                    </div>
+                    <p className="text-xs">No messages yet</p>
+                    <p className="text-[10px] mt-1 opacity-50">
+                      Messages appear here once you're connected
+                    </p>
+                  </div>
                 ) : (
-                  <span className="text-gray-400">Waiting for peer to share their Instagram...</span>
+                  messages.map((m, i) => (
+                    <div
+                      key={i}
+                      className={`flex ${m.from === "me" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`${m.from === "me" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-200 border border-gray-700"} px-3 py-1.5 rounded-xl max-w-[90%] shadow-sm`}
+                      >
+                        <div className="text-[13px] leading-relaxed">
+                          {m.text}
+                        </div>
+                        <div
+                          className={`text-[9px] mt-1 opacity-60 text-right`}
+                        >
+                          {new Date(m.ts).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+              <div className="p-3 bg-gray-800/80 border-t border-gray-700">
+                <div className="flex gap-2">
+                  <input
+                    ref={chatInputRef}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        sendChatMessage(chatInput);
+                      }
+                    }}
+                    className="flex-1 input bg-gray-900 border-gray-700 text-xs h-9"
+                    placeholder={
+                      isConnected
+                        ? "Type a message... (Enter to send)"
+                        : "Waiting for partner..."
+                    }
+                    disabled={!isConnected}
+                  />
+                  <button
+                    onClick={() => sendChatMessage(chatInput)}
+                    disabled={!isConnected || !chatInput.trim()}
+                    className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium disabled:opacity-50 transition-colors"
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* IG exchange panel */}
+            <div className="card p-0 overflow-hidden">
+              <div className="bg-gradient-to-r from-green-600/80 to-emerald-600/80 px-4 py-2">
+                <h3 className="text-white text-[12px] font-semibold flex items-center gap-2">
+                  📸 Instagram Swap
+                </h3>
+              </div>
+              <div className="p-3 bg-gray-900/50">
+                <div className="flex gap-2">
+                  <input
+                    value={myIg}
+                    onChange={(e) => setMyIg(e.target.value)}
+                    placeholder="@username"
+                    className="flex-1 input bg-gray-800 border-gray-700 text-[12px] h-8"
+                    disabled={!isConnected || myIgShared}
+                  />
+                  <button
+                    onClick={shareIg}
+                    disabled={!isConnected || myIgShared}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                      myIgShared
+                        ? "bg-gray-700 text-gray-400"
+                        : "bg-green-600 text-white hover:bg-green-500"
+                    }`}
+                  >
+                    {myIgShared ? "SHARED" : "SHARE"}
+                  </button>
+                </div>
+                {peerIg && (
+                  <div className="mt-2 p-2 bg-green-500/10 border border-green-500/20 rounded-lg">
+                    <p className="text-[10px] text-green-400 font-medium">
+                      Partner's IG:
+                    </p>
+                    <p className="text-sm text-white font-mono mt-0.5">
+                      {peerIg}
+                    </p>
+                  </div>
                 )}
               </div>
             </div>
@@ -683,13 +919,20 @@ export default function Home() {
         {/* Status indicator */}
         <div className="text-center mt-6">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass">
-            <div className={`h-2 w-2 rounded-full ${
-              status === 'connected' ? 'bg-green-400 animate-pulse' :
-              status === 'searching' ? 'bg-blue-400 animate-pulse' :
-              status === 'connecting' ? 'bg-yellow-400 animate-spin' : 'bg-gray-400'
-            }`}></div>
+            <div
+              className={`h-2 w-2 rounded-full ${
+                status === "connected"
+                  ? "bg-green-400 animate-pulse"
+                  : status === "searching"
+                    ? "bg-blue-400 animate-pulse"
+                    : status === "connecting"
+                      ? "bg-yellow-400 animate-spin"
+                      : "bg-gray-400"
+              }`}
+            ></div>
             <span className="text-sm font-medium text-gray-300">
-              {statusMessage} {myId && <span className="text-gray-500">• ID: {myId}</span>}
+              {statusMessage}{" "}
+              {myId && <span className="text-gray-500">• ID: {myId}</span>}
             </span>
           </div>
         </div>
@@ -769,6 +1012,22 @@ const ConnectionIcon = ({ className }: { className?: string }) => (
       strokeLinecap="round"
       strokeLinejoin="round"
       d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-4.08-3.8a8 8 0 0110.14 0M6.343 9.343a8 8 0 0111.314 0"
+    />
+  </svg>
+);
+
+const NextIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    fill="none"
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+    strokeWidth={2}
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M13 5l7 7-7 7M5 5l7 7-7 7"
     />
   </svg>
 );
