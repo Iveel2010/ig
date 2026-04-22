@@ -107,6 +107,15 @@ export default function AdminDashboard() {
     router.push(`/?call=${userId}`);
   };
 
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/logout", { method: "POST" });
+      router.push("/admin/login");
+    } catch (err) {
+      console.error("logout error", err);
+    }
+  };
+
   const fetchStats = async () => {
     try {
       const res = await fetch("/api/admin/stats");
@@ -155,25 +164,46 @@ export default function AdminDashboard() {
             </div>
             <span className="font-bold tracking-tight">Admin Dashboard</span>
           </div>
-          <button
-            onClick={() => router.push("/")}
-            className="text-xs font-bold text-gray-400 hover:text-white transition-colors flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/5 hover:bg-white/5"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => router.push("/")}
+              className="text-xs font-bold text-gray-400 hover:text-white transition-colors flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/5 hover:bg-white/5"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M10 19l-7-7m0 0l7-7m-7 7h18"
-              />
-            </svg>
-            Back to App
-          </button>
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M10 19l-7-7m0 0l7-7m-7 7h18"
+                />
+              </svg>
+              Back to App
+            </button>
+            <button
+              onClick={handleLogout}
+              className="text-xs font-bold text-red-400 hover:text-red-300 transition-colors flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-500/10 hover:bg-red-500/5"
+            >
+              <svg
+                className="w-4 h-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+                />
+              </svg>
+              Log Out
+            </button>
+          </div>
         </div>
       </nav>
 

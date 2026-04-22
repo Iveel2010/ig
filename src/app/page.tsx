@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 
 export default function Home() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -10,6 +11,7 @@ export default function Home() {
   const wsRef = useRef<WebSocket | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const iceQueueRef = useRef<RTCIceCandidateInit[]>([]);
   const [messages, setMessages] = useState<
     Array<{ from: "me" | "peer"; text: string; ts: number }>
   >([]);
@@ -19,79 +21,44 @@ export default function Home() {
 
   const [authChecked, setAuthChecked] = useState(false);
   const [authUser, setAuthUser] = useState<any | null>(null);
-  const [callInitiated, setCallInitiated] = useState(false);
-
-  // Instagram exchange state
-  const [myIg, setMyIg] = useState("");
-  const [myIgShared, setMyIgShared] = useState(false);
-  const [peerIg, setPeerIg] = useState<string | null>(null);
-
-  const chatInputRef = useRef<HTMLInputElement | null>(null);
-  const [country, setCountry] = useState("United States");
-  const [language, setLanguage] = useState("English");
-  const [isLive, setIsLive] = useState(false);
   const [isFakeStream, setIsFakeStream] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
-  const [waitingCount, setWaitingCount] = useState(0);
   const [status, setStatus] = useState<
     "idle" | "searching" | "connecting" | "connected"
   >("idle");
   const [myId, setMyId] = useState<string | null>(null);
-
-  // Admin Features: Snap Filters
-  const [activeFilter, setActiveFilter] = useState("none");
   const [wsStatus, setWsStatus] = useState<
     "disconnected" | "connecting" | "connected"
   >("disconnected");
-  const isAdmin = authUser?.role === "admin";
-
-  const filters = [
-    { id: "none", name: "Original", style: "" },
-    { id: "grayscale", name: "Noir", style: "grayscale(100%)" },
-    { id: "sepia", name: "Vintage", style: "sepia(100%)" },
-    {
-      id: "brightness",
-      name: "Glamour",
-      style: "brightness(1.5) contrast(1.1) saturate(1.2)",
-    },
-    { id: "blur", name: "Privacy", style: "blur(10px)" },
-    { id: "hue", name: "Cyberpunk", style: "hue-rotate(180deg) saturate(2)" },
-    { id: "invert", name: "Negative", style: "invert(100%)" },
-  ];
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
-    if (status === "connected") {
-      setIsLive(true);
-      setTimeout(() => chatInputRef.current?.focus(), 100);
-    } else {
-      setIsLive(false);
-    }
-  }, [status]);
+  const [recentPartners, setRecentPartners] = useState<
+    Array<{
+      id: string;
+      imageUrl: string;
+      timestamp: number;
+    }>
+  >([]);
+  const [showGallery, setShowGallery] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (status === "idle") {
-          findPartner();
-        } else {
-          nextPartner();
-        }
+        if (status === "idle") findPartner();
+        else nextPartner();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [status]);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   const SIGNALING_URL =
     typeof window !== "undefined"
       ? process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || "ws://localhost:8082"
       : "";
 
-  // Create a synthetic MediaStream (canvas video + silent audio) for testing without camera/mic
   function createFakeMediaStream() {
     const canvas = document.createElement("canvas");
     canvas.width = 640;
@@ -100,25 +67,52 @@ export default function Home() {
     let frame = 0;
     const iv = window.setInterval(() => {
       if (!ctx) return;
-      ctx.fillStyle = "#0b1220";
+      const hue = frame % 360;
+      ctx.fillStyle = `hsl(${hue}, 30%, 10%)`;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < canvas.width; i += 40) {
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.lineTo(i, canvas.height);
+        ctx.stroke();
+      }
+      for (let i = 0; i < canvas.height; i += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, i);
+        ctx.lineTo(canvas.width, i);
+        ctx.stroke();
+      }
+      const x = canvas.width / 2 + Math.cos(frame / 20) * 100;
+      const y = canvas.height / 2 + Math.sin(frame / 20) * 100;
+      ctx.fillStyle = `hsl(${(hue + 180) % 360}, 70%, 50%)`;
+      ctx.beginPath();
+      ctx.arc(x, y, 40, 0, Math.PI * 2);
+      ctx.fill();
       ctx.fillStyle = "#ffffff";
-      ctx.font = "24px sans-serif";
-      ctx.fillText("Fake Camera", 20, 40);
-      ctx.fillText(new Date().toLocaleTimeString(), 20, 80);
-      ctx.fillText(`Frame ${frame++}`, 20, 120);
+      ctx.font = "bold 32px sans-serif";
+      ctx.fillText("VIRTUAL CAMERA", 40, 60);
+      ctx.font = "20px monospace";
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.fillText(`TIME: ${new Date().toLocaleTimeString()}`, 40, 100);
+      ctx.fillText(`FRAME: ${frame++}`, 40, 130);
+      ctx.fillText(`STATUS: HARDCODED_ACTIVE`, 40, 160);
+      ctx.fillStyle = "rgba(59, 130, 246, 0.8)";
+      ctx.fillRect(40, 180, 140, 30);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText(authUser?.username || "YOU", 55, 200);
     }, 1000 / 30);
 
     const videoStream = (canvas as any).captureStream(30);
-
-    // create a silent audio track
     const AudioCtx =
       (window as any).AudioContext || (window as any).webkitAudioContext;
     const ac = new AudioCtx();
     const dst = ac.createMediaStreamDestination();
     const osc = ac.createOscillator();
     const gain = ac.createGain();
-    gain.gain.value = 0; // silent
+    gain.gain.value = 0;
     osc.connect(gain);
     gain.connect(dst);
     try {
@@ -129,7 +123,6 @@ export default function Home() {
       ...videoStream.getVideoTracks(),
       ...dst.stream.getAudioTracks(),
     ]);
-    // attach cleanup helper
     (combined as any)._fakeCleanup = () => {
       clearInterval(iv);
       try {
@@ -143,45 +136,60 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!authChecked) return;
-    setWsStatus("connecting");
-    const ws = new WebSocket(SIGNALING_URL);
-    wsRef.current = ws;
-    ws.onopen = () => {
-      console.log("connected to signaling server");
-      setWsStatus("connected");
-      // Request initial stats
-      ws.send(JSON.stringify({ type: "get-stats" }));
-    };
-    ws.onmessage = (ev) => {
-      let data: any;
-      try {
-        data = JSON.parse(ev.data);
-      } catch (e) {
-        return;
-      }
-      handleSignalMessage(data);
-    };
-    ws.onclose = () => {
-      console.log("signaling closed");
-      setWsStatus("disconnected");
-    };
-    return () => {
-      ws.close();
-    };
-  }, []);
+    if (typeof window === "undefined" || !authChecked) return;
 
-  // check authentication before allowing access to home
+    let reconnectTimer: NodeJS.Timeout;
+
+    function connect() {
+      console.log("Connecting to WebSocket:", SIGNALING_URL);
+      setWsStatus("connecting");
+      const ws = new WebSocket(SIGNALING_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("WebSocket connected");
+        setWsStatus("connected");
+        ws.send(JSON.stringify({ type: "get-stats" }));
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          console.log("WebSocket message received:", data);
+          handleSignalMessage(data);
+        } catch (e) {
+          console.error("Error parsing WebSocket message:", e);
+        }
+      };
+
+      ws.onerror = (e) => {
+        console.error("WebSocket error:", e);
+      };
+
+      ws.onclose = () => {
+        console.log("WebSocket closed, reconnecting in 3 seconds...");
+        setWsStatus("disconnected");
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+    }
+
+    connect();
+
+    return () => {
+      clearTimeout(reconnectTimer);
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [authChecked]);
+
   useEffect(() => {
-    if (typeof window === "undefined") return;
     let mounted = true;
     (async () => {
       try {
         const res = await fetch("/api/me", { cache: "no-store" });
         if (!mounted) return;
         if (!res.ok) {
-          // not authenticated -> redirect to signup
           router.replace("/signup");
           return;
         }
@@ -198,43 +206,8 @@ export default function Home() {
     };
   }, [router]);
 
-  // Poll for stats every 5 seconds
-  useEffect(() => {
-    if (wsStatus !== "connected") return;
-    const iv = setInterval(() => {
-      send({ type: "get-stats" });
-    }, 5000);
-    return () => clearInterval(iv);
-  }, [wsStatus]);
-
   async function startCamera() {
     if (localStreamRef.current) return;
-
-    const constraints = [
-      { video: true, audio: true },
-      { video: true, audio: false },
-      { video: false, audio: true },
-    ];
-
-    for (const constraint of constraints) {
-      try {
-        const s = await navigator.mediaDevices.getUserMedia(constraint);
-        localStreamRef.current = s;
-        if (localVideoRef.current) localVideoRef.current.srcObject = s;
-        console.log("Media started with constraints:", constraint);
-        setIsFakeStream(false);
-        return;
-      } catch (err) {
-        console.warn(
-          `Failed to start media with constraints:`,
-          constraint,
-          err,
-        );
-      }
-    }
-
-    // If all real hardware attempts fail, fallback to fake stream
-    console.warn("No camera/mic found. Using virtual stream for testing.");
     setIsFakeStream(true);
     const fake = createFakeMediaStream();
     localStreamRef.current = fake;
@@ -242,26 +215,57 @@ export default function Home() {
   }
 
   function send(obj: any) {
-    wsRef.current?.send(JSON.stringify(obj));
+    console.log(
+      "Sending WebSocket message:",
+      obj,
+      "WebSocket state:",
+      wsRef.current?.readyState,
+    );
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(obj));
+    } else {
+      console.error("WebSocket not ready, state:", wsRef.current?.readyState);
+    }
+  }
+
+  function capturePartnerImage() {
+    if (!remoteVideoRef.current) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = remoteVideoRef.current.videoWidth;
+    canvas.height = remoteVideoRef.current.videoHeight;
+    const ctx = canvas.getContext("2d");
+
+    if (ctx) {
+      ctx.drawImage(remoteVideoRef.current, 0, 0);
+      const imageUrl = canvas.toDataURL("image/jpeg", 0.8);
+
+      setRecentPartners((prev) => {
+        const newPartner = {
+          id: `partner_${Date.now()}`,
+          imageUrl,
+          timestamp: Date.now(),
+        };
+
+        // Keep only the 10 most recent partners
+        const updated = [newPartner, ...prev].slice(0, 10);
+        return updated;
+      });
+    }
+  }
+
+  function reportUser(partnerId: string) {
+    console.log(`Reporting user: ${partnerId}`);
+    alert("User reported successfully");
+    setRecentPartners((prev) => prev.filter((p) => p.id !== partnerId));
   }
 
   async function findPartner() {
+    console.log("findPartner called");
     await startCamera();
+    console.log("Camera started, sending join request");
     send({ type: "join" });
     setStatus("searching");
-  }
-
-  // Handle structured messages received over the RTC data channel
-  function handleDataChannelMessage(data: any) {
-    if (!data || typeof data !== "object") return;
-    switch (data.type) {
-      case "ig-approved":
-        // peer has shared their IG (both sides must click approve to send)
-        if (data.ig) setPeerIg(String(data.ig));
-        break;
-      default:
-        console.log("unknown datachannel message", data);
-    }
   }
 
   async function createPeerConnection(initiator?: boolean) {
@@ -272,8 +276,31 @@ export default function Home() {
       if (e.candidate) send({ type: "ice-candidate", candidate: e.candidate });
     };
     pc.ontrack = (e) => {
-      if (remoteVideoRef.current)
+      if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = e.streams[0];
+        setStatus("connected");
+        setTimeout(() => capturePartnerImage(), 2000);
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      console.log(`[PC] state: ${pc.connectionState}`);
+      if (pc.connectionState === "connected") setStatus("connected");
+      if (
+        pc.connectionState === "failed" ||
+        pc.connectionState === "disconnected"
+      ) {
+        cleanupPeer();
+        setTimeout(() => findPartner(), 1000);
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      console.log(`[ICE] state: ${pc.iceConnectionState}`);
+      if (
+        pc.iceConnectionState === "connected" ||
+        pc.iceConnectionState === "completed"
+      ) {
+        setStatus("connected");
+      }
     };
     if (localStreamRef.current) {
       for (const track of localStreamRef.current.getTracks()) {
@@ -281,106 +308,52 @@ export default function Home() {
       }
     }
 
-    // Set up data channel handlers: initiator creates, receiver listens
     if (initiator) {
       const dc = pc.createDataChannel("chat");
       dataChannelRef.current = dc;
-      dc.onopen = () => console.log("datachannel open");
       dc.onmessage = (e) => {
-        const raw = e.data;
-        try {
-          const parsed = JSON.parse(String(raw));
-          if (parsed && parsed.type) {
-            handleDataChannelMessage(parsed);
-            return;
-          }
-        } catch (err) {
-          // not JSON, treat as chat text
-        }
         setMessages((prev) => [
           ...prev,
-          { from: "peer", text: String(raw), ts: Date.now() },
+          { from: "peer", text: String(e.data), ts: Date.now() },
         ]);
       };
     } else {
       pc.ondatachannel = (ev) => {
         const dc = ev.channel;
         dataChannelRef.current = dc;
-        dc.onopen = () => console.log("datachannel open");
         dc.onmessage = (e) => {
-          const raw = e.data;
-          try {
-            const parsed = JSON.parse(String(raw));
-            if (parsed && parsed.type) {
-              handleDataChannelMessage(parsed);
-              return;
-            }
-          } catch (err) {
-            // not JSON, treat as chat text
-          }
           setMessages((prev) => [
             ...prev,
-            { from: "peer", text: String(raw), ts: Date.now() },
+            { from: "peer", text: String(e.data), ts: Date.now() },
           ]);
         };
       };
     }
-
     pcRef.current = pc;
     return pc;
   }
 
-  // watch for call param in URL
-  useEffect(() => {
-    if (!authChecked || !authUser || authUser.role !== "admin" || callInitiated)
-      return;
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
-    const urlParams = new URLSearchParams(window.location.search);
-    const targetId = urlParams.get("call");
-    if (targetId) {
-      setCallInitiated(true);
-      console.log("Initiating admin call to", targetId);
-      send({ type: "identify", role: "admin", name: "Administrator" });
-      setTimeout(() => {
-        send({ type: "admin-call", targetId });
-      }, 100);
-    }
-  }, [authChecked, authUser, callInitiated, myId]); // myId ensures ws is connected and initialized
-
-  // handle signaling messages
   async function handleSignalMessage(data: any) {
+    console.log(`[WS] msg: ${data.type}`);
     switch (data.type) {
       case "stats":
         setOnlineCount(data.online);
-        setWaitingCount(data.waiting);
         break;
       case "init":
         setMyId(data.id);
-        // Send username to signaling server for identification
-        if (authUser) {
+        if (authUser)
           send({ type: "set-username", username: authUser.username });
-        }
-        break;
-      case "active-users":
-        // Admin might get this if they are on this page
         break;
       case "waiting":
         setStatus("searching");
         break;
       case "paired":
-        if (data.adminCall) {
-          console.log(
-            data.initiator
-              ? "Calling user..."
-              : `Admin ${data.fromName} is calling!`,
-          );
-        }
         setStatus("connecting");
         {
           const initiator = data.initiator;
           await startCamera();
           const pc = await createPeerConnection(initiator);
+          pcRef.current = pc;
           if (initiator) {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
@@ -391,12 +364,23 @@ export default function Home() {
       case "offer":
         {
           setStatus("connecting");
-          await startCamera();
-          const pc2 = await createPeerConnection(false);
-          await pc2.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          const answer = await pc2.createAnswer();
-          await pc2.setLocalDescription(answer);
-          send({ type: "answer", sdp: pc2.localDescription });
+          if (!pcRef.current) {
+            await startCamera();
+            pcRef.current = await createPeerConnection(false);
+          }
+          await pcRef.current.setRemoteDescription(
+            new RTCSessionDescription(data.sdp),
+          );
+
+          while (iceQueueRef.current.length > 0) {
+            const cand = iceQueueRef.current.shift();
+            if (cand)
+              await pcRef.current.addIceCandidate(new RTCIceCandidate(cand));
+          }
+
+          const answer = await pcRef.current.createAnswer();
+          await pcRef.current.setLocalDescription(answer);
+          send({ type: "answer", sdp: pcRef.current.localDescription });
         }
         break;
       case "answer":
@@ -404,630 +388,619 @@ export default function Home() {
           await pcRef.current.setRemoteDescription(
             new RTCSessionDescription(data.sdp),
           );
+
+          while (iceQueueRef.current.length > 0) {
+            const cand = iceQueueRef.current.shift();
+            if (cand)
+              await pcRef.current.addIceCandidate(new RTCIceCandidate(cand));
+          }
+
           setStatus("connected");
         }
         break;
       case "ice-candidate":
-        if (pcRef.current && data.candidate) {
-          try {
-            await pcRef.current.addIceCandidate(
-              new RTCIceCandidate(data.candidate),
-            );
-          } catch (e) {
-            console.warn("Error adding ice candidate:", e);
+        if (data.candidate) {
+          if (pcRef.current && pcRef.current.remoteDescription) {
+            try {
+              await pcRef.current.addIceCandidate(
+                new RTCIceCandidate(data.candidate),
+              );
+            } catch (e) {
+              console.error("[ICE] error adding candidate:", e);
+            }
+          } else {
+            iceQueueRef.current.push(data.candidate);
           }
         }
         break;
       case "peer-left":
         cleanupPeer();
-        // Auto-rejoin after a brief delay
-        setTimeout(() => {
-          findPartner();
-        }, 1500);
+        setTimeout(() => findPartner(), 500);
         break;
-      default:
-        console.log("unknown signal", data);
     }
   }
 
   function cleanupPeer() {
     if (pcRef.current) {
-      try {
-        pcRef.current.close();
-      } catch (e) {}
+      pcRef.current.close();
       pcRef.current = null;
     }
     if (dataChannelRef.current) {
-      try {
-        dataChannelRef.current.close();
-      } catch (e) {}
+      dataChannelRef.current.close();
       dataChannelRef.current = null;
     }
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-    if (localStreamRef.current) {
-      try {
-        const s: any = localStreamRef.current;
-        if (s._fakeCleanup) {
-          try {
-            s._fakeCleanup();
-          } catch (e) {}
-        }
-        for (const t of localStreamRef.current.getTracks()) {
-          try {
-            t.stop();
-          } catch (e) {}
-        }
-      } catch (e) {}
-      localStreamRef.current = null;
-      if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    }
-    // reset IG exchange state
-    setMyIgShared(false);
-    setPeerIg(null);
+    iceQueueRef.current = [];
     setStatus("idle");
   }
 
   function endCall() {
+    console.log("endCall called, clearing messages");
+    setMessages([]);
     send({ type: "leave" });
     cleanupPeer();
   }
 
-  function sendChatMessage(text: string) {
-    if (!text) return;
-    const dc = dataChannelRef.current;
-    if (!dc || dc.readyState !== "open") {
-      alert("Chat not connected yet.");
-      return;
-    }
-    try {
-      dc.send(text);
-      setMessages((prev) => [...prev, { from: "me", text, ts: Date.now() }]);
-      setChatInput("");
-    } catch (e) {
-      console.error("failed to send chat message", e);
-    }
-  }
-
-  function shareIg() {
-    const dc = dataChannelRef.current;
-    if (!dc || dc.readyState !== "open") {
-      alert("Chat not connected yet.");
-      return;
-    }
-    const ig = myIg.trim();
-    if (!ig) {
-      alert("Enter your Instagram handle before approving.");
-      return;
-    }
-    try {
-      dc.send(JSON.stringify({ type: "ig-approved", ig }));
-      setMyIgShared(true);
-    } catch (e) {
-      console.error("failed to send ig-approved", e);
-    }
-  }
-
-  async function nextPartner() {
+  function nextPartner() {
+    console.log("nextPartner called");
     endCall();
-    // Small delay to ensure the signaling server processes the leave
-    setTimeout(() => {
-      findPartner();
-    }, 100);
+    setTimeout(() => findPartner(), 100);
   }
 
-  // ----- UI Helpers -----
-  const statusMessage =
-    status === "searching" && waitingCount <= 1
-      ? "Waiting for someone to join..."
-      : {
-          idle: "Ready to chat",
-          searching: "Looking for a partner...",
-          connecting: "Establishing connection...",
-          connected: "Connected",
-        }[status];
-
-  const isConnected = status === "connected";
-  const showRemotePlaceholder =
-    status !== "connected" || !remoteVideoRef.current?.srcObject;
-
-  if (!authChecked) {
-    return (
-      <div className="min-h-screen gradient-bg flex items-center justify-center p-4">
-        <div className="text-center text-white">
-          <div className="flex justify-center mb-4">
-            <div className="h-12 w-12 rounded-full bg-gradient-to-tr from-blue-500 to-purple-600 flex items-center justify-center shadow-lg animate-pulse">
-              <div className="h-6 w-6 bg-white/20 rounded-full animate-ping"></div>
-            </div>
-          </div>
-          <div className="text-lg font-medium">Checking authentication…</div>
-          <div className="text-sm text-gray-400 mt-2">
-            If you don't have an account, you'll be redirected to sign up.
-          </div>
-        </div>
-      </div>
-    );
+  function sendChatMessage() {
+    if (
+      !chatInput.trim() ||
+      !dataChannelRef.current ||
+      dataChannelRef.current.readyState !== "open"
+    )
+      return;
+    dataChannelRef.current.send(chatInput);
+    setMessages((prev) => [
+      ...prev,
+      { from: "me", text: chatInput, ts: Date.now() },
+    ]);
+    setChatInput("");
   }
+
+  if (!authChecked) return null;
+
+  // Animation variants
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: { opacity: 1, transition: { duration: 0.4 } },
+  };
+
+  const messageVariants = {
+    hidden: { opacity: 0, y: 10 },
+    visible: { opacity: 1, y: 0 },
+    exit: { opacity: 0, x: -20 },
+  };
+
+  const modalVariants = {
+    hidden: { opacity: 0, scale: 0.95 },
+    visible: { opacity: 1, scale: 1 },
+    exit: { opacity: 0, scale: 0.95 },
+  };
 
   return (
-    <div className="min-h-screen gradient-bg flex items-center justify-center p-4">
-      <div className="w-full max-w-6xl">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row items-center justify-between mb-6 gap-4 px-2">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-600 shadow-lg flex items-center justify-center">
-              <CameraIcon className="h-5 w-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-3xl font-bold text-white tracking-tight bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-                OmeTV Clone
-              </h1>
-              <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">
-                Real-Time Video Chat
-              </p>
-            </div>
-          </div>
+    <motion.div
+      initial="hidden"
+      animate="visible"
+      variants={containerVariants}
+      className="h-screen w-full bg-black flex flex-col overflow-hidden text-white font-sans relative"
+    >
+      {/* Animated gradient background */}
+      <div className="absolute inset-0 bg-gradient-to-br from-blue-950/20 via-black to-purple-950/20 pointer-events-none" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(59,130,246,0.1),transparent_70%)] pointer-events-none" />
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg border border-white/5">
-              <div
-                className={`h-2 w-2 rounded-full ${
-                  wsStatus === "connected"
-                    ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
-                    : wsStatus === "connecting"
-                      ? "bg-yellow-500 animate-pulse"
-                      : "bg-red-500"
-                }`}
-              />
-              <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
-                Server: {wsStatus}
-              </span>
+      {/* Top Header */}
+      <header className="h-14 flex items-center justify-between px-4 sm:px-6 bg-zinc-900/30 backdrop-blur-xl border-b border-white/5 z-50">
+        <div className="flex items-center gap-2 sm:gap-4">
+          <motion.div
+            initial={{ x: -20, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            transition={{ delay: 0.1 }}
+            className="flex flex-col"
+          >
+            <h1 className="text-lg sm:text-xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-blue-600 italic">
+              OMETV <span className="text-white not-italic">REALTIME</span>
+            </h1>
+          </motion.div>
+          <div className="hidden sm:block h-6 w-[1px] bg-white/10"></div>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.2 }}
+            className="hidden sm:flex items-center gap-2 text-xs font-bold text-zinc-400"
+          >
+            <div className="relative">
+              <div className="h-2 w-2 rounded-full bg-green-500" />
+              <div className="absolute inset-0 h-2 w-2 rounded-full bg-green-500 animate-ping opacity-75" />
             </div>
-            <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg border border-white/5">
-              <div className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]" />
-              <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
-                Online: {onlineCount}
+            <motion.span
+              key={onlineCount}
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              transition={{ type: "spring", stiffness: 500 }}
+            >
+              {onlineCount} ONLINE
+            </motion.span>
+          </motion.div>
+          <div className="hidden sm:block h-6 w-[1px] bg-white/10"></div>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.3 }}
+            className="hidden sm:flex items-center gap-2 text-xs font-bold"
+          >
+            <div
+              className={`h-2 w-2 rounded-full ${wsStatus === "connected" ? "bg-green-500" : wsStatus === "connecting" ? "bg-yellow-500 animate-pulse" : "bg-red-500"}`}
+            />
+            <span
+              className={
+                wsStatus === "connected"
+                  ? "text-green-400"
+                  : wsStatus === "connecting"
+                    ? "text-yellow-400"
+                    : "text-red-400"
+              }
+            >
+              {wsStatus}
+            </span>
+          </motion.div>
+        </div>
+
+        <div className="flex items-center gap-2 sm:gap-3">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowGallery(true)}
+            className="relative text-[9px] sm:text-[10px] font-bold tracking-widest text-zinc-400 hover:text-white transition-colors uppercase"
+          >
+            Recent
+            {recentPartners.length > 0 && (
+              <span className="absolute -top-1 -right-2 h-4 w-4 bg-blue-600 rounded-full text-[8px] flex items-center justify-center text-white">
+                {recentPartners.length}
               </span>
-            </div>
-            <div className="flex items-center gap-2 glass px-3 py-1.5 rounded-lg border border-white/5">
-              <span className="text-[10px] text-gray-400 font-bold uppercase">
-                Country
-              </span>
-              <select
-                value={country}
-                onChange={(e) => setCountry(e.target.value)}
-                className="bg-transparent text-white text-xs font-medium focus:outline-none cursor-pointer"
-              >
-                <option className="bg-gray-900" value="United States">
-                  🇺🇸 USA
-                </option>
-                <option className="bg-gray-900" value="Global">
-                  🌐 Global
-                </option>
-                <option className="bg-gray-900" value="Europe">
-                  🇪🇺 Europe
-                </option>
-                <option className="bg-gray-900" value="Asia">
-                  🌏 Asia
-                </option>
-              </select>
-            </div>
-            {myId && (
-              <div className="glass px-4 py-2 rounded-full border border-white/5">
-                <span className="text-gray-400 text-sm">ID: </span>
-                <span className="text-white font-mono text-sm bg-blue-500/10 px-2 py-1 rounded">
-                  {myId}
+            )}
+          </motion.button>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={async () => {
+              await fetch("/api/logout", { method: "POST" });
+              router.push("/signup");
+            }}
+            className="text-[9px] sm:text-[10px] font-bold tracking-widest text-zinc-400 hover:text-white transition-colors uppercase"
+          >
+            Logout
+          </motion.button>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col lg:flex-row p-3 sm:p-4 gap-3 sm:gap-4 overflow-hidden">
+        {/* Videos Container */}
+        <div className="flex-1 flex flex-col gap-3 sm:gap-4 lg:flex-row">
+          {/* Remote Video */}
+          <motion.div
+            initial={{ scale: 0.98, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.4, delay: 0.1 }}
+            className="flex-1 relative bg-zinc-900/50 backdrop-blur-sm rounded-3xl overflow-hidden border border-white/5 shadow-2xl group"
+          >
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
+            />
+            <AnimatePresence>
+              {status !== "connected" && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-b from-zinc-900/80 to-black/80 backdrop-blur-md"
+                >
+                  <div className="relative">
+                    <motion.div
+                      animate={{
+                        boxShadow: [
+                          "0 0 0 0 rgba(59,130,246,0)",
+                          "0 0 0 10px rgba(59,130,246,0.1)",
+                          "0 0 0 0 rgba(59,130,246,0)",
+                        ],
+                      }}
+                      transition={{ repeat: Infinity, duration: 2 }}
+                      className="h-24 w-24 rounded-full border-2 border-white/5 flex items-center justify-center"
+                    >
+                      {status === "searching" ? (
+                        <motion.div
+                          animate={{ rotate: 360 }}
+                          transition={{
+                            repeat: Infinity,
+                            duration: 1,
+                            ease: "linear",
+                          }}
+                          className="h-12 w-12 border-4 border-blue-500 border-t-transparent rounded-full"
+                        />
+                      ) : (
+                        <svg
+                          className="h-12 w-12 text-zinc-700"
+                          fill="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                        </svg>
+                      )}
+                    </motion.div>
+                  </div>
+                  <motion.p
+                    initial={{ y: 10, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.2 }}
+                    className="mt-6 text-sm font-bold tracking-widest text-zinc-400 uppercase"
+                  >
+                    {status === "idle"
+                      ? "READY TO START"
+                      : status === "searching"
+                        ? "FINDING PARTNER..."
+                        : "CONNECTING..."}
+                  </motion.p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <motion.div
+              initial={{ x: -20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ delay: 0.3 }}
+              className="absolute top-6 left-6 flex items-center gap-2"
+            >
+              <div className="bg-blue-600/20 backdrop-blur-xl border border-blue-500/30 px-3 py-1 rounded-full">
+                <span className="text-[10px] font-black tracking-widest text-blue-400">
+                  PARTNER
                 </span>
               </div>
-            )}
-          </div>
+            </motion.div>
+          </motion.div>
+
+          {/* Local Video */}
+          <motion.div
+            initial={{ scale: 0.98, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.4, delay: 0.2 }}
+            className="flex-1 relative bg-zinc-900/50 backdrop-blur-sm rounded-3xl overflow-hidden border border-white/5 shadow-2xl group"
+          >
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover"
+            />
+            <motion.div
+              initial={{ x: -20, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ delay: 0.4 }}
+              className="absolute top-6 left-6 flex items-center gap-2"
+            >
+              <div className="bg-white/10 backdrop-blur-xl border border-white/10 px-3 py-1 rounded-full">
+                <span className="text-[10px] font-black tracking-widest text-white/70">
+                  YOU
+                </span>
+              </div>
+            </motion.div>
+            <AnimatePresence>
+              {isFakeStream && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 20 }}
+                  className="absolute bottom-6 right-6"
+                >
+                  <div className="bg-yellow-500/20 backdrop-blur-xl border border-yellow-500/30 px-3 py-1 rounded-full">
+                    <span className="text-[10px] font-black tracking-widest text-yellow-400 uppercase flex items-center gap-1">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+                      </span>
+                      Virtual Active
+                    </span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
         </div>
 
-        {/* Main Content Area */}
-        <div className="flex flex-col lg:flex-row gap-8">
-          {/* Left Column: Videos and Main Controls */}
-          <div className="flex-1">
-            {/* Video Area - OmeTV Style Side-by-Side */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 h-[350px] md:h-[450px]">
-              {/* My Video */}
-              <div className="relative glass rounded-2xl overflow-hidden shadow-2xl bg-gray-900 border-2 border-blue-500/30">
-                {isLive && (
-                  <div className="absolute top-4 right-4 flex items-center gap-2 bg-red-600 px-2 py-1 rounded-md shadow-lg animate-pulse z-10">
-                    <div className="h-2 w-2 bg-white rounded-full"></div>
-                    <span className="text-[10px] text-white font-bold tracking-wider">
-                      LIVE
-                    </span>
-                  </div>
-                )}
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  muted
-                  playsInline
-                  className="w-full h-full object-cover scale-x-[-1] transition-all duration-500"
-                  style={{
-                    filter: filters.find((f) => f.id === activeFilter)?.style,
-                  }}
-                />
-                {isFakeStream && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/90 backdrop-blur-sm z-20 p-6 text-center">
-                    <div className="h-12 w-12 bg-yellow-500/20 rounded-full flex items-center justify-center mb-3">
-                      <CameraIcon className="h-6 w-6 text-yellow-500" />
-                    </div>
-                    <p className="text-white font-bold text-sm mb-1">
-                      No Camera Detected
-                    </p>
-                    <p className="text-gray-400 text-[10px] max-w-[180px]">
-                      We're using a virtual stream so you can still test the app
-                      features.
-                    </p>
-                  </div>
-                )}
-                {!localStreamRef.current && !isFakeStream && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-sm">
-                    <CameraIcon className="h-12 w-12 text-gray-600 mb-2" />
-                    <p className="text-gray-400 font-medium text-sm">
-                      Camera is off
-                    </p>
-                  </div>
-                )}
-                <div className="absolute bottom-4 left-4 glass px-3 py-1 rounded-lg">
-                  <span className="text-white text-xs font-semibold flex items-center gap-2">
-                    <div className="h-2 w-2 bg-blue-500 rounded-full"></div>
-                    You{" "}
-                    {isAdmin && (
-                      <span className="text-[9px] bg-blue-500 text-white px-1 rounded ml-1">
-                        ADMIN
-                      </span>
-                    )}
-                  </span>
-                </div>
-
-                {/* Snap Filters for Admin */}
-                {isAdmin && (
-                  <div className="absolute top-4 left-4 right-16 flex gap-1 overflow-x-auto pb-2 scrollbar-hide z-20">
-                    {filters.map((f) => (
-                      <button
-                        key={f.id}
-                        onClick={() => setActiveFilter(f.id)}
-                        className={`px-3 py-1 rounded-full text-[9px] font-bold uppercase tracking-wider transition-all backdrop-blur-md border ${
-                          activeFilter === f.id
-                            ? "bg-blue-600 text-white border-blue-400"
-                            : "bg-black/40 text-gray-400 border-white/10 hover:bg-black/60"
-                        }`}
-                      >
-                        {f.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Remote Video */}
-              <div className="relative glass rounded-2xl overflow-hidden shadow-2xl bg-gray-900 border-2 border-purple-500/30">
-                <video
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  className="w-full h-full object-cover"
-                />
-                {showRemotePlaceholder && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 backdrop-blur-md">
-                    <div className="relative">
-                      <div className="h-16 w-16 rounded-full bg-gradient-to-br from-purple-600 to-blue-600 flex items-center justify-center shadow-2xl">
-                        {status === "searching" ? (
-                          <div className="relative">
-                            <SearchIcon className="h-8 w-8 text-white animate-pulse" />
-                            <div className="absolute -inset-3 bg-blue-500/20 rounded-full animate-ping"></div>
-                          </div>
-                        ) : status === "connecting" ? (
-                          <ConnectionIcon className="h-8 w-8 text-yellow-400 animate-spin" />
-                        ) : (
-                          <CameraIcon className="h-8 w-8 text-gray-500" />
-                        )}
-                      </div>
-                    </div>
-                    <p className="text-white text-base font-semibold mt-4 mb-1">
-                      {statusMessage}
-                    </p>
-                    <p className="text-gray-500 text-xs max-w-[150px] text-center px-4">
-                      {status === "searching" && "Looking for a partner..."}
-                      {status === "connecting" && "Establishing link..."}
-                      {status === "idle" && "Click Start to meet someone"}
-                    </p>
-                  </div>
-                )}
-                <div className="absolute bottom-4 left-4 glass px-3 py-1 rounded-lg">
-                  <span className="text-white text-xs font-semibold flex items-center gap-2">
-                    <div className="h-2 w-2 bg-purple-500 rounded-full animate-pulse"></div>
-                    {status === "connected" ? "Partner" : "Waiting..."}
-                  </span>
-                </div>
-              </div>
+        {/* Chat & Controls Sidebar */}
+        <motion.div
+          initial={{ x: 20, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          transition={{ duration: 0.4, delay: 0.3 }}
+          className="w-full lg:w-96 flex flex-col gap-3 sm:gap-4"
+        >
+          {/* Chat Box */}
+          <div className="flex-1 bg-zinc-900/30 backdrop-blur-xl rounded-2xl sm:rounded-3xl border border-white/5 overflow-hidden flex flex-col shadow-2xl">
+            <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-white/5 bg-zinc-900/50">
+              <h2 className="text-[10px] sm:text-xs font-black tracking-widest text-zinc-300 uppercase flex items-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span
+                    className={`animate-ping absolute inline-flex h-full w-full rounded-full ${status === "connected" ? "bg-green-400" : "bg-zinc-500"} opacity-75`}
+                  ></span>
+                  <span
+                    className={`relative inline-flex rounded-full h-2 w-2 ${status === "connected" ? "bg-green-500" : "bg-zinc-500"}`}
+                  ></span>
+                </span>
+                Chat Messages
+              </h2>
             </div>
-
-            {/* Main Controls */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              {status === "idle" ? (
-                <button
-                  onClick={findPartner}
-                  className="group relative px-12 py-4 rounded-xl font-bold text-lg flex items-center justify-center w-full sm:w-auto gap-4 transition-all duration-300 transform hover:scale-[1.02] bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-xl shadow-blue-500/20"
-                >
-                  <SearchIcon className="h-5 w-5" />
-                  <div className="flex flex-col items-start">
-                    <span className="leading-tight">START CHAT</span>
-                    <span className="text-[10px] opacity-60 font-normal">
-                      Press ESC
-                    </span>
-                  </div>
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={nextPartner}
-                    className="group relative px-12 py-4 rounded-xl font-bold text-lg flex items-center justify-center w-full sm:w-auto gap-4 transition-all duration-300 transform hover:scale-[1.02] bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-xl shadow-blue-500/20"
-                  >
-                    <NextIcon className="h-5 w-5" />
-                    <div className="flex flex-col items-start">
-                      <span className="leading-tight">NEXT PARTNER</span>
-                      <span className="text-[10px] opacity-60 font-normal">
-                        Press ESC
-                      </span>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={endCall}
-                    className="group relative px-8 py-4 rounded-xl font-bold text-lg flex items-center justify-center w-full sm:w-auto gap-4 transition-all duration-300 transform hover:scale-[1.02] bg-gray-800 text-white border border-red-500/30 hover:bg-red-950/20"
-                  >
-                    <EndIcon className="h-5 w-5 text-red-500" />
-                    <span>STOP</span>
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Right Column: Chat and IG Exchange */}
-          <div className="w-full lg:w-96 flex flex-col gap-6">
-            {/* Chat panel */}
-            <div className="card p-0 overflow-hidden flex flex-col h-[400px]">
-              <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-3 flex items-center justify-between">
-                <h3 className="text-white text-sm font-semibold flex items-center gap-2">
-                  <div className="h-2 w-2 bg-green-400 rounded-full animate-pulse"></div>
-                  Live Chat
-                </h3>
-                {isConnected && (
-                  <span className="text-[10px] text-blue-100 bg-white/10 px-2 py-0.5 rounded-full">
-                    Connected
-                  </span>
-                )}
-              </div>
-              <div
-                className="flex-1 overflow-y-auto p-4 space-y-3 text-sm bg-gray-900/50"
-                id="chat-messages"
-              >
+            <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-3 sm:space-y-4 scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent">
+              <AnimatePresence initial={false}>
                 {messages.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-gray-500 text-center p-4">
-                    <div className="h-10 w-10 bg-gray-800 rounded-full flex items-center justify-center mb-2">
-                      <span className="text-lg">💬</span>
-                    </div>
-                    <p className="text-xs">No messages yet</p>
-                    <p className="text-[10px] mt-1 opacity-50">
-                      Messages appear here once you're connected
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 0.3 }}
+                    className="h-full flex flex-col items-center justify-center"
+                  >
+                    <svg
+                      className="h-12 w-12 mb-2"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+                      />
+                    </svg>
+                    <p className="text-[10px] font-bold tracking-widest uppercase">
+                      No messages yet
                     </p>
-                  </div>
+                  </motion.div>
                 ) : (
                   messages.map((m, i) => (
-                    <div
+                    <motion.div
                       key={i}
+                      variants={messageVariants}
+                      initial="hidden"
+                      animate="visible"
+                      exit="exit"
+                      layout
+                      transition={{ duration: 0.2 }}
                       className={`flex ${m.from === "me" ? "justify-end" : "justify-start"}`}
                     >
-                      <div
-                        className={`${m.from === "me" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-200 border border-gray-700"} px-3 py-1.5 rounded-xl max-w-[90%] shadow-sm`}
+                      <motion.div
+                        whileHover={{ scale: 1.02 }}
+                        className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm ${m.from === "me" ? "bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-br-none shadow-lg shadow-blue-500/20" : "bg-zinc-800/80 backdrop-blur-sm text-zinc-100 rounded-bl-none border border-white/5"}`}
                       >
-                        <div className="text-[13px] leading-relaxed">
-                          {m.text}
-                        </div>
-                        <div
-                          className={`text-[9px] mt-1 opacity-60 text-right`}
-                        >
-                          {new Date(m.ts).toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </div>
-                      </div>
-                    </div>
+                        {m.text}
+                      </motion.div>
+                    </motion.div>
                   ))
                 )}
-                <div ref={messagesEndRef} />
-              </div>
-              <div className="p-3 bg-gray-800/80 border-t border-gray-700">
-                <div className="flex gap-2">
-                  <input
-                    ref={chatInputRef}
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        sendChatMessage(chatInput);
-                      }
-                    }}
-                    className="flex-1 input bg-gray-900 border-gray-700 text-xs h-9"
-                    placeholder={
-                      isConnected
-                        ? "Type a message... (Enter to send)"
-                        : "Waiting for partner..."
-                    }
-                    disabled={!isConnected}
-                  />
-                  <button
-                    onClick={() => sendChatMessage(chatInput)}
-                    disabled={!isConnected || !chatInput.trim()}
-                    className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-medium disabled:opacity-50 transition-colors"
+              </AnimatePresence>
+              <div ref={messagesEndRef} />
+            </div>
+            <div className="p-3 sm:p-4 bg-zinc-900/50 border-t border-white/5">
+              <div className="flex gap-2">
+                <motion.input
+                  whileFocus={{
+                    scale: 1.01,
+                    borderColor: "rgba(59,130,246,0.5)",
+                  }}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && sendChatMessage()}
+                  placeholder={
+                    status === "connected"
+                      ? "Type a message..."
+                      : "Connect to chat"
+                  }
+                  disabled={status !== "connected"}
+                  className="flex-1 bg-black/50 backdrop-blur-sm border border-white/5 rounded-xl sm:rounded-2xl px-4 sm:px-5 py-2.5 sm:py-3 text-xs sm:text-sm focus:outline-none focus:border-blue-500/50 transition-all disabled:opacity-50"
+                />
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={sendChatMessage}
+                  disabled={status !== "connected" || !chatInput.trim()}
+                  className="h-10 w-10 sm:h-11 sm:w-11 bg-gradient-to-r from-blue-600 to-blue-500 rounded-xl sm:rounded-2xl flex items-center justify-center transition-all disabled:opacity-50 shadow-lg shadow-blue-500/20"
+                >
+                  <svg
+                    className="h-4 w-4 sm:h-5 sm:w-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
                   >
-                    Send
-                  </button>
-                </div>
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+                    />
+                  </svg>
+                </motion.button>
               </div>
             </div>
+          </div>
 
-            {/* IG exchange panel */}
-            <div className="card p-0 overflow-hidden">
-              <div className="bg-gradient-to-r from-green-600/80 to-emerald-600/80 px-4 py-2">
-                <h3 className="text-white text-[12px] font-semibold flex items-center gap-2">
-                  📸 Instagram Swap
-                </h3>
-              </div>
-              <div className="p-3 bg-gray-900/50">
-                <div className="flex gap-2">
-                  <input
-                    value={myIg}
-                    onChange={(e) => setMyIg(e.target.value)}
-                    placeholder="@username"
-                    className="flex-1 input bg-gray-800 border-gray-700 text-[12px] h-8"
-                    disabled={!isConnected || myIgShared}
-                  />
-                  <button
-                    onClick={shareIg}
-                    disabled={!isConnected || myIgShared}
-                    className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all ${
-                      myIgShared
-                        ? "bg-gray-700 text-gray-400"
-                        : "bg-green-600 text-white hover:bg-green-500"
-                    }`}
+          {/* Controls */}
+          <div className="flex gap-2 sm:gap-3">
+            {status === "idle" ? (
+              <motion.button
+                whileHover={{
+                  scale: 1.02,
+                  boxShadow: "0 0 20px rgba(59,130,246,0.5)",
+                }}
+                whileTap={{ scale: 0.98 }}
+                onClick={findPartner}
+                disabled={wsStatus !== "connected"}
+                className={`flex-1 py-4 sm:py-6 rounded-2xl sm:rounded-3xl font-black text-lg sm:text-xl tracking-tighter transition-all shadow-xl ${wsStatus === "connected" ? "bg-blue-600 hover:bg-blue-500 shadow-blue-500/20" : "bg-zinc-700 text-zinc-400 cursor-not-allowed"}`}
+              >
+                {wsStatus === "connected" ? "START" : "CONNECTING..."}
+              </motion.button>
+            ) : (
+              <>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={nextPartner}
+                  className="flex-[2] bg-white text-black hover:bg-zinc-200 py-4 sm:py-6 rounded-2xl sm:rounded-3xl font-black text-lg sm:text-xl tracking-tighter transition-all shadow-xl"
+                >
+                  NEXT
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={endCall}
+                  className="flex-1 bg-zinc-800/80 backdrop-blur-sm hover:bg-zinc-700 py-4 sm:py-6 rounded-2xl sm:rounded-3xl font-black text-lg sm:text-xl tracking-tighter transition-all border border-white/5"
+                >
+                  STOP
+                </motion.button>
+              </>
+            )}
+          </div>
+        </motion.div>
+      </div>
+
+      {/* Keyboard Hint */}
+      <footer className="hidden sm:flex h-10 bg-black/30 backdrop-blur-sm border-t border-white/5 items-center justify-center gap-6">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 0.5, y: 0 }}
+          transition={{ delay: 0.5 }}
+          className="flex items-center gap-2"
+        >
+          <span className="bg-zinc-800 px-2 py-0.5 rounded text-[10px] font-bold">
+            ESC
+          </span>
+          <span className="text-[10px] font-bold tracking-widest uppercase">
+            Next Partner
+          </span>
+        </motion.div>
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 0.5, y: 0 }}
+          transition={{ delay: 0.6 }}
+          className="flex items-center gap-2"
+        >
+          <span className="bg-zinc-800 px-2 py-0.5 rounded text-[10px] font-bold">
+            ENTER
+          </span>
+          <span className="text-[10px] font-bold tracking-widest uppercase">
+            Send Message
+          </span>
+        </motion.div>
+      </footer>
+
+      {/* Gallery Modal */}
+      <AnimatePresence>
+        {showGallery && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4"
+            onClick={() => setShowGallery(false)}
+          >
+            <motion.div
+              variants={modalVariants}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="bg-zinc-900/90 backdrop-blur-xl rounded-2xl sm:rounded-3xl border border-white/10 max-w-4xl w-full max-h-[85vh] sm:max-h-[80vh] overflow-hidden shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-white/10 bg-zinc-900/80 flex items-center justify-between">
+                <h2 className="text-base sm:text-lg font-black tracking-tighter text-white">
+                  Recent Partners ({recentPartners.length}/10)
+                </h2>
+                <motion.button
+                  whileHover={{ scale: 1.1, rotate: 90 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => setShowGallery(false)}
+                  className="text-zinc-400 hover:text-white transition-colors"
+                >
+                  <svg
+                    className="h-5 w-5 sm:h-6 sm:w-6"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
                   >
-                    {myIgShared ? "SHARED" : "SHARE"}
-                  </button>
-                </div>
-                {peerIg && (
-                  <div className="mt-2 p-2 bg-green-500/10 border border-green-500/20 rounded-lg">
-                    <p className="text-[10px] text-green-400 font-medium">
-                      Partner's IG:
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </motion.button>
+              </div>
+              <div className="p-3 sm:p-6 overflow-y-auto max-h-[60vh] sm:max-h-[60vh] scrollbar-thin scrollbar-thumb-zinc-700">
+                {recentPartners.length === 0 ? (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="text-center py-12 text-zinc-500"
+                  >
+                    <p className="text-sm font-bold tracking-widest uppercase">
+                      No recent partners yet
                     </p>
-                    <p className="text-sm text-white font-mono mt-0.5">
-                      {peerIg}
-                    </p>
+                  </motion.div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+                    <AnimatePresence>
+                      {recentPartners.map((partner, index) => (
+                        <motion.div
+                          key={partner.id}
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.8 }}
+                          transition={{ delay: index * 0.05 }}
+                          className="relative group"
+                        >
+                          <img
+                            src={partner.imageUrl}
+                            alt="Recent partner"
+                            className="w-full aspect-square object-cover rounded-2xl border border-white/5"
+                          />
+                          <motion.div
+                            initial={{ opacity: 0 }}
+                            whileHover={{ opacity: 1 }}
+                            className="absolute inset-0 bg-black/60 backdrop-blur-sm rounded-2xl flex items-center justify-center gap-2"
+                          >
+                            <motion.button
+                              whileHover={{ scale: 1.1 }}
+                              whileTap={{ scale: 0.9 }}
+                              onClick={() => reportUser(partner.id)}
+                              className="bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded-full text-xs font-bold transition-colors"
+                            >
+                              Report
+                            </motion.button>
+                          </motion.div>
+                          <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            transition={{ delay: 0.2 }}
+                            className="mt-2 text-xs text-zinc-400 text-center"
+                          >
+                            {new Date(partner.timestamp).toLocaleTimeString()}
+                          </motion.div>
+                        </motion.div>
+                      ))}
+                    </AnimatePresence>
                   </div>
                 )}
               </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Status indicator */}
-        <div className="text-center mt-6">
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass">
-            <div
-              className={`h-2 w-2 rounded-full ${
-                status === "connected"
-                  ? "bg-green-400 animate-pulse"
-                  : status === "searching"
-                    ? "bg-blue-400 animate-pulse"
-                    : status === "connecting"
-                      ? "bg-yellow-400 animate-spin"
-                      : "bg-gray-400"
-              }`}
-            ></div>
-            <span className="text-sm font-medium text-gray-300">
-              {statusMessage}{" "}
-              {myId && <span className="text-gray-500">• ID: {myId}</span>}
-            </span>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="mt-8 text-center">
-          <p className="text-xs text-gray-500">
-            Secure video chat platform • Built with WebRTC technology
-          </p>
-          <p className="text-xs text-gray-600 mt-1">
-            For demonstration purposes only
-          </p>
-        </div>
-      </div>
-    </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 }
-
-// Simple SVG Icons (inline to avoid extra dependencies)
-const CameraIcon = ({ className }: { className?: string }) => (
-  <svg
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth={2}
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-    />
-  </svg>
-);
-
-const SearchIcon = ({ className }: { className?: string }) => (
-  <svg
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth={2}
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-    />
-  </svg>
-);
-
-const EndIcon = ({ className }: { className?: string }) => (
-  <svg
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth={2}
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.28 3H5z"
-    />
-  </svg>
-);
-
-const ConnectionIcon = ({ className }: { className?: string }) => (
-  <svg
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth={2}
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-4.08-3.8a8 8 0 0110.14 0M6.343 9.343a8 8 0 0111.314 0"
-    />
-  </svg>
-);
-
-const NextIcon = ({ className }: { className?: string }) => (
-  <svg
-    className={className}
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-    strokeWidth={2}
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      d="M13 5l7 7-7 7M5 5l7 7-7 7"
-    />
-  </svg>
-);
